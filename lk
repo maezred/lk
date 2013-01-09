@@ -1,0 +1,128 @@
+#! /usr/bin/php
+<?php
+/**
+ * lk - A wrapper for ls and du.
+ *	Displays the output of both commands smashed into the format of ls.
+ *
+ * @author Matthew Oltendorf <moltendorf@gmail.com>
+ */
+
+/**
+ * This command does not accept input in any form yet, so you have to manually adjust these.
+ */
+
+$overwrite	= true; // Overwrite the first ls output with the update (may be buggy if your terminal is not tall enough for the output).
+$prompt		= 3; // The height of your command prompt (i.e. add one to the number of \n characters in $PS1).
+
+/**
+ * Everything below this is the meat of this command.
+ */
+
+$ll = null;
+exec('ls -ahlF --color=always --group-directories-first 2> /dev/null', $ll); // Fetch colored output.
+
+// Present the raw output as the rest of this script can take some time; we'll overwrite it with the updated output later (people like instant gratification).
+echo implode("\n", $ll), "\n", 'One moment, fetching the directory sizes.', str_repeat("\n", --$prompt);
+
+$plain = null;
+exec('ls -ahlF --group-directories-first 2> /dev/null', $plain); // Fetch plain output.
+
+$width = 0;
+
+// Use plain output to get the maximum width of the output (filtering through marked up output is frustrating).
+foreach ($plain as $line) {
+	$check = strlen($line);
+
+	if ($check > $width) {
+		$width = $check;
+	}
+}
+
+unset ($plain);
+
+// If either of these commands have issues reading the directory contents, the error output is ignored, and the directories it failed to query will simply remain at their default sizes.
+
+$current = null;
+exec('du -h --max-depth 1 2> /dev/null', $current); // Fetch sizes of directories up to one below this one.
+
+$parent = null;
+exec('du -hs .. 2> /dev/null', $parent); // Fetch size of the parent directory.
+
+$du = array_merge($current, $parent); // Merge the output of the two directory size commands (the parent one actually displays ".." as the name of the directory).
+
+$matches = null;
+
+// Get the width of the filesize column (we actually combine its width with the group column as the group can vary in width as well).
+if (preg_match('/^(?:[^\\s]+\\s+){3,3}([^\\s]+\\s+([^\\s]+))/', $ll[1], $matches)) {
+	$length = strlen($matches[1]);
+	$size = strlen($matches[2]);
+} else {
+	$length = 0;
+}
+
+$directories = [];
+$sizes = [];
+
+// Split up the output of the directory sizes, and pad the filesize column more if needed.
+foreach ($du as $line) {
+	$matches = null;
+	preg_match('/^([^\\s]+)\\s+(?:\\.\\/)?([^\\s]+)$/', $line, $matches);
+
+	$check = strlen($matches[1]);
+
+	if ($check > $size) {
+		$check -= $size;
+
+		$length += $check;
+		$width += $check;
+	}
+
+	array_push($sizes, $matches[1]);
+	array_push($directories, $matches[2]);
+}
+
+unset ($du);
+
+// Adjust lines that are not directories (we have no new data for these, we're just padding the filesize column and coloring stuff).
+foreach ($ll as &$line) {
+	$matches = null;
+
+	if (preg_match('/^([^d](?:[^\\s]+\\s+){3,3}([^\\s]+))(\\s+[^\\s]+)(.*)$/', $line, $matches)) {
+		$line = str_pad($matches[1]."\033[01;35m".str_pad($matches[3], $length-strlen($matches[2]), ' ', STR_PAD_LEFT)."\033[0m".$matches[4], $width);
+	}
+}
+
+unset ($line);
+
+$height = $prompt+count($ll); // We do this now as we're about to release the array of output.
+$output = implode("\n", $ll); // Now that the non-directory lines have been updated, we can merge it all.
+
+unset ($ll);
+
+$searches = [];
+$replacements = [];
+
+$max = count($directories);
+
+// Create the search and replace tweaks for directories that we have info about.
+for ($i = 0; $i < $max; ++$i) {
+	$search = '/^(d(?:[^\\s]+\\s+){3,3}([^\\s]+))\\s+[^\\s]+((?:\\s+[^\\s]+){2,2}\\s+'."(?:\033\\[(?:[0-9]+;)?[0-9]+m)*".preg_quote($directories[$i])."(?:\033\\[(?:[0-9]+;)?[0-9]+m)*".'\\/)$/m';
+
+	$matches = null;
+
+	if (preg_match($search, $output, $matches)) {
+		array_push($searches, $search);
+		array_push($replacements, str_pad($matches[1]."\033[01;35m".str_pad($sizes[$i], $length-strlen($matches[2]), ' ', STR_PAD_LEFT)."\033[0m".$matches[3], $width));
+	}
+}
+
+// Move cursor.
+if ($overwrite) {
+	echo "\r\033[", $height, "A";
+} else {
+	// Even though "overwrite" is off, we can still safely overwrite a small amount without screwing up output.
+	echo "\r\033[", $prompt, "A", str_repeat(' ', $width), "\n";
+}
+
+// Figured it would be cleaner to do the replace here in one step instead of include it in the loop.
+echo preg_replace($searches, $replacements, $output), "\n", str_repeat(' ', $width);
